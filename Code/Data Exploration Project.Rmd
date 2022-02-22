@@ -20,7 +20,7 @@ library(fmtr)
 library(jtools)
 library(dplyr)
 library(readr)
-data <- read.csv("data")
+
 ```
 
 ```{r include=FALSE}
