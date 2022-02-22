@@ -1,0 +1,241 @@
+---
+title: "Data Exploration Project"
+author: "Kyle Bailey"
+output: html_document
+---
+
+Research Question:
+
+The College Scorecard was released at the start of September 2015. Among colleges that predominantly grant bachelor's degrees, did the release of the Scorecard shift student interest to high-earnings colleges relative to low-earnings ones (as proxied by Google searches for keywords associated with those colleges)?
+
+Data cleaning:
+
+```{r message=FALSE, warning=FALSE}
+#load libraries
+
+library(purrr)
+library(tidyverse)
+library(car)
+library(fmtr)
+library(jtools)
+library(dplyr)
+library(readr)
+data <- read.csv("data")
+```
+
+```{r include=FALSE}
+#load in data
+
+scorecard <- read.csv("Most+Recent+Cohorts+(Scorecard+Elements).csv", header = TRUE)
+id_name_link <- read.csv("id_name_link.csv", header = TRUE)
+
+trends <- list.files(pattern = "trends_", full.names = TRUE) %>% 
+  lapply(read_csv) %>% 
+  bind_rows()
+```
+
+```{r warning=FALSE}
+#joining id_name_link to trends
+
+id_name_link_trends <- left_join(x = id_name_link, y = trends, by = "schname")
+
+#joining id_name_link & trends to scorecard
+
+data <- left_join(x = id_name_link_trends, y = scorecard, by = c("unitid" = "UNITID"))
+
+```
+
+```{r include=FALSE}
+#getting mean index values and find all universities that share the same name
+
+repeats <- data %>% 
+  group_by(unitid, schname) %>% 
+  summarize(mean(index, na.rm = TRUE)) %>% 
+  group_by(schname) %>% 
+  mutate(n = n()) %>% 
+  filter(n != 1)
+
+#removing repeats from data
+
+anti_join(data, repeats, by = "schname")
+
+#selecting only universities that predominantly grant bachelor's degrees
+
+data <- data %>% filter(PREDDEG == 3)
+```
+
+Set up:
+
+```{r}
+#group dates by month or week
+
+month_week <- data %>% 
+  group_by(monthorweek) %>% 
+  summarize(n = n())
+
+#remove dates that are marked as 'NA'
+
+month_week_clean <- na.omit(month_week, c("monthorweek"))
+
+#filtering out dates after September 2015
+
+pre_scorecard <- month_week_clean$monthorweek[1:128]
+pre_scorecard <- as.data.frame(pre_scorecard)
+
+#creating a dummy variable for dates before September 2015
+
+data$scorecard_implimented <- ifelse(data$monthorweek %in% pre_scorecard$pre_scorecard, 0, 1)
+
+data <- data %>% 
+  relocate(scorecard_implimented, .after = monthorweek)
+```
+
+```{r message=FALSE, warning=FALSE}
+#group schools by income & remove schools with no earnings data
+
+earnings <- data %>% 
+  group_by(unitid, schname) %>% 
+  summarize(mean(as.numeric(md_earn_wne_p10.REPORTED.EARNINGS))) %>% 
+  na.omit(earnings, c("md_earn_wne_p10.REPORTED.EARNINGS"))
+
+earnings <- rename(earnings, AverageEarnings = 'mean(as.numeric(md_earn_wne_p10.REPORTED.EARNINGS))')
+
+#getting the mean and standard deviation of all the mean earnings for schools
+
+mean_earnings <- mean(earnings$AverageEarnings)
+stdev_earnings <- sd(earnings$AverageEarnings)
+
+mean_earnings
+stdev_earnings
+
+data <- data %>%
+  relocate(md_earn_wne_p10.REPORTED.EARNINGS, .after = opeid6) 
+  
+data <- rename(data, reported_earnings = md_earn_wne_p10.REPORTED.EARNINGS)
+```
+
+```{r}
+#defining high & low earnings
+
+dist <- ggplot(data = earnings, aes(x = AverageEarnings)) +
+  stat_function(fun = dnorm, args = list(mean = mean(earnings$AverageEarnings), sd = sd(earnings$AverageEarnings))) +
+  geom_vline(xintercept = mean(earnings$AverageEarnings)) +
+  geom_vline(xintercept = mean(earnings$AverageEarnings)+sd(earnings$AverageEarnings)) +
+  geom_vline(xintercept = mean(earnings$AverageEarnings)-sd(earnings$AverageEarnings)) + 
+  labs(title = "Normal Distribution of Earnings", x = "Average Earnings", y = "f(Z)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+dist
+```
+
+```{r}
+#high earnings will be one standard deviation above the mean and low earnings will be one standard deviation below the mean
+
+mean_earnings + stdev_earnings
+mean_earnings - stdev_earnings
+
+#creating binary variables for high/low earners
+
+data$high_earners <- ifelse(data$reported_earnings >= 54038.32, "1", "0")
+data$low_earners <- ifelse(data$reported_earnings <= 30496.91, "1", "0")
+
+data <- data %>%
+  relocate(high_earners, .after = reported_earnings) %>% 
+  relocate(low_earners, .after = high_earners)
+```
+
+```{r}
+#standardizing the Index
+
+data <- data %>% 
+  group_by(unitid, schname) %>% 
+  filter(index != "NA") %>% 
+  mutate(standardized_index = scale(index, center = TRUE, scale = TRUE))
+
+data <- data %>% 
+  relocate(standardized_index, .after = index)
+
+summary(data$standardized_index)
+```
+
+Graphical Analysis:
+
+```{r echo=TRUE}
+#graphing Google Trends indices over time for high earners
+
+weeklysearcheshigh <- data %>% 
+  group_by(monthorweek, high_earners) %>% 
+  summarize(mean(standardized_index)) %>% 
+  filter(high_earners == 1)
+
+colnames(weeklysearcheshigh)[3] = "index"
+
+g1 <- ggplot(data = weeklysearcheshigh, aes(x = monthorweek, y = index)) +
+  geom_point() +
+  geom_vline(xintercept = "2015-08-30 - 2015-09-05") +
+  labs(title = "High Earner Interest Over Time", x = "Date", y = "Google Trends Index") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g1
+
+#graphing Google Trends indices over time for low earners
+
+weeklysearcheslow <- data %>% 
+  group_by(monthorweek, low_earners) %>% 
+  summarize(mean(standardized_index)) %>% 
+  filter(low_earners == 1)
+
+colnames(weeklysearcheslow)[3] = "index"
+
+g2 <- ggplot(data = weeklysearcheslow, aes(x = monthorweek, y = index)) +
+  geom_point() +
+  geom_vline(xintercept = "2015-08-30 - 2015-09-05") +
+  labs(title = "Low Earner Interest Over Time", x = "Date", y = "Google Trends Index") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g2
+```
+
+```{r}
+#testing various regressions
+
+regression1 <- lm(standardized_index ~ scorecard_implimented, data = data)
+regression2 <- lm(standardized_index ~ scorecard_implimented*high_earners, data = data)
+regression3 <- lm(standardized_index ~ scorecard_implimented*low_earners, data = data)
+
+export_summs(regression1, regression2, regression3)
+```
+
+Write-up:
+
+We used Google trends data for colleges combined with Scorecard data that gives us a lot of information about students that have graduated from these colleges and universities. Scorecard's implementation in September 2015 is what we are trying to examine in its effects on whether or not students shifted their interest to high-earning colleges relative to low-earning colleges.
+
+To further pursue our research question, I needed to remove all universities that shared the same name so we could have consistent data that was not affected by duplicates and selected only colleges that predominantly offered bachelor’s degrees. Additionally, I created a binary variable for before and after the implementation of Scorecard in September 2015 so we can analyze that later on. 
+
+After assembling and cleaning the data, I did some analysis on graduate earnings to determine the cutoffs for high or low earning colleges. To do this I took the average income for each college and set the range as plus or minus one standard deviation from the mean. This range encapsulated the mean income of $42,267.61 and a standard deviation of $11,770.71. Thus, our low earners were those who made $30,496.91 and our high earners were those who made $54,038.32.
+Given that each value of a Google Trends index is unique to the institution that it is describing, I standardized the indices by subtracting each the mean of the index values from the index and dividing that by the standard deviation of the indices. This gave us a level playing field to analyze the Trends data freely across all institutions.
+
+I wanted to get a clear picture of how interest in colleges with higher and lower earning graduates changed before and after Scorecard was implemented so I graphed both over the period of time supplied which was 2013 to 2016. Looking at these graphs it wasn't clear to me whether or not Scorecard had any impact on interest as the overall trends seemed to remain constant, peaking occasionally from what I assumed to be admissions and recruiting periods but remaining fairly constant before and after the September 2015 drop date of Scorecard (seen as the vertical line on both graphs). In fact, there was a slight downward trend in the graphs for both groups.
+
+To get dig deeper into the relationship between the release of Scorecard and the Google trends data, I ran a few regressions to test the effect it might have had on searches. For my first regression (regression1) I ran a simple linear model regressing the standardized index on the binary variable of Scorecard being implemented. The results of this model can be interpreted as the implementation of Scorecard is associated with a 0.18 decrease in the standardized Google Trends index value. This tells us that it is likely Scorecard had no positive effect and actually decreased search frequency for colleges as a whole. Since the data appears non-linear in the graphs, I tried another regression I did not include int eh results where I introduced a polynomial to the Scorecard term. Given that this variable is a binary one (1 or 0) there was no effect on the regression output, and it remained the same as the first model which I expected. For my second regression (regression2) I added an interaction term of the high earners on Scorecard’s implementation. These results gave more insight on our research question of how Scorecard affected high earning college searches. When Scorecard being implemented = 1 there is a 0.18 decrease in the index value and when Scorecard = 1 as well as the school being high earning = 1 is an additional 0.01 decrease in the standardized index value we associate a total effect of -0.19 overall. This tells us that among high earning colleges their searches were actually lower than lower earning colleges. Finally, I ran a similar regression on lower earning colleges to see their effect as well. The effect was negligible on low earning schools as when Scorecard = 1 and the school being low earning = 1 there was a 0.00 change in the standardized index variable, so we associate no change in the standardized index value whether Scorecard was implemented or not. All models had R2 values of 0.00 tells us that the relationship does little to significantly statistically explain differences in the Google Trends index and the release of Scorecard.
+
+Ultimately, there is little evidence here to conclude Scorecard was a success in its implementation. Our data points to a decrease in interest for both high and low earning universities with high being slightly lower as well. There are many factors to consider that could have influenced the data such as increased word of mouth, high schools having better information internally for prospective students, and general decrease in interest of college as a path due to increasing costs of attendance.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
